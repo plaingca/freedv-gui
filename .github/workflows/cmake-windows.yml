@@ -4,17 +4,13 @@ on:
   push:
     branches-ignore:
     - 'dr-render-manual'
-    
+
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: Debug
 
 jobs:
   build:
-    # The CMake configure and build commands are platform agnostic and should work equally
-    # well on Windows or Mac.  You can convert this to a matrix build if you need
-    # cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
     runs-on: ubuntu-latest
 
     steps:
@@ -28,7 +24,6 @@ jobs:
         sudo apt-get update
         echo "/opt/wine-staging/bin" >> $GITHUB_PATH
         sudo apt install -y --install-recommends wine-staging
-        #sudo apt install -y --install-recommends wine64 wine32
 
     - name: Install required packages
       shell: bash
@@ -76,10 +71,9 @@ jobs:
       run: |
         export PATH=${{github.workspace}}/llvm-mingw-20230320-ucrt-ubuntu-18.04-x86_64/bin:$PATH
         make -j6 package
-        
+
     - name: Upload a Build Artifact
-    - uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v4
       with:
         name: winbuild
-        path: /home/runner/work/freedv-gui/freedv-gui/build_windows/
-                
+        path: ${{ github.workspace }}/build_windows/
