@@ -76,3 +76,10 @@ jobs:
       run: |
         export PATH=${{github.workspace}}/llvm-mingw-20230320-ucrt-ubuntu-18.04-x86_64/bin:$PATH
         make -j6 package
+        
+    - name: Upload a Build Artifact
+    - uses: actions/upload-artifact@v4
+      with:
+        name: winbuild
+        path: /home/runner/work/freedv-gui/freedv-gui/build_windows/
+                
