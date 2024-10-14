@@ -1,13 +1,19 @@
 if(CMAKE_CROSSCOMPILING)
     set(RADE_CMAKE_ARGS ${RADE_CMAKE_ARGS} -DPython3_ROOT_DIR=${Python3_ROOT_DIR} -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
+elseif(APPLE)
+    set(RADE_CMAKE_ARGS ${RADE_CMAKE_ARGS} -DPython3_ROOT_DIR=${Python3_ROOT_DIR})
 endif()
+
+if(BUILD_OSX_UNIVERSAL)
+    set(RADE_CMAKE_ARGS ${RADE_CMAKE_ARGS} -DBUILD_OSX_UNIVERSAL=1)
+endif(BUILD_OSX_UNIVERSAL)
 
 include(ExternalProject)
 ExternalProject_Add(build_rade
    SOURCE_DIR rade_src
    BINARY_DIR rade_build
    GIT_REPOSITORY https://github.com/drowe67/radae.git
-   GIT_TAG dr-embed
+   GIT_TAG main
    CMAKE_ARGS ${RADE_CMAKE_ARGS}
    #CMAKE_CACHE_ARGS -DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=${CMAKE_OSX_DEPLOYMENT_TARGET}
    INSTALL_COMMAND ""
@@ -29,8 +35,8 @@ set(rade_BINARY_DIR ${BINARY_DIR})
 if(WIN32)
 
 # XXX only x86_64 supported for now
-set(PYTHON_URL https://www.python.org/ftp/python/3.12.6/python-3.12.6-embed-amd64.zip)
-set(PYTHON_HASH ae256f31ee4700eba679802233bff3e9)
+set(PYTHON_URL https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip)
+set(PYTHON_HASH 4c0a5a44d4ca1d0bc76fe08ea8b76adc)
 
 # Download Python. This is only included in the installer.
 FetchContent_Declare(download_python3 
