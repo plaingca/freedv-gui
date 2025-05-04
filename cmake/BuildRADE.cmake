@@ -56,6 +56,8 @@ set_target_properties(opus PROPERTIES
     IMPORTED_LOCATION "${BINARY_DIR}/build_opus-prefix/src/build_opus/.libs/libopus${CMAKE_STATIC_LIBRARY_SUFFIX}"
 )
 set(FARGAN_CONFIG_H_FILE "${BINARY_DIR}/build_opus-prefix/src/build_opus/config.h")
+set(FARGAN_ARM_CONFIG_H_FILE "${FARGAN_CONFIG_H_FILE}")
+set(FARGAN_X86_CONFIG_H_FILE "${FARGAN_CONFIG_H_FILE}")
 endif(APPLE AND BUILD_OSX_UNIVERSAL)
 
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/fargan_config.h.in" "${CMAKE_CURRENT_BINARY_DIR}/fargan_config.h")
@@ -145,10 +147,11 @@ install(
 # otherwise no packages will be installed.
 set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS
     "ExecWait '\\\"\$INSTDIR\\\\bin\\\\vc_redist.x64.exe\\\" /install /passive'
+    MessageBox MB_OK 'FreeDV will now open a Command Prompt window to finish installing the Python components needed for RADE. Please allow this process to complete without interruption. It may appear as though nothing is happening but rest assured, things are happening.' /SD IDOK
     ExecShellWait '' '\$INSTDIR\\\\bin\\\\rade-setup.bat' ''")
 
 # Make sure we fully clean up after Python on uninstall.
 set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS
-    "${CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS}\r\nRMDir /r /REBOOTOK '\$INSTDIR\\\\bin\\\\Lib'\r\nRMDir /r /REBOOTOK '\$INSTDIR\\\\bin\\\\scripts'\r\nRMDir /r /REBOOTOK '\$INSTDIR\\\\bin\\\\share'")
+    "${CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS}\r\nRMDir /r /REBOOTOK '\$INSTDIR\\\\bin\\\\Lib'\r\nRMDir /r /REBOOTOK '\$INSTDIR\\\\bin\\\\scripts'\r\nRMDir /r /REBOOTOK '\$INSTDIR\\\\bin\\\\share'\r\nRMDir /r /REBOOTOK '\$INSTDIR\\\\bin\\\\__pycache__'\r\nRMDir /r /REBOOTOK '\$INSTDIR\\\\bin\\\\radae\\\\__pycache__'")
 
 endif(WIN32)

@@ -27,6 +27,7 @@
 #include "topFrame.h"
 #include "gui/util/NameOverrideAccessible.h"
 #include "gui/util/LabelOverrideAccessible.h"
+#include "util/logging/ulog.h"
 
 extern int g_playFileToMicInEventId;
 extern int g_recFileFromRadioEventId;
@@ -105,7 +106,7 @@ public:
         m_tabs->Refresh();
         m_tabs->Update();
 
-        wxAuiNotebookPageArray& pages = m_tabs->GetPages();
+        auto& pages = m_tabs->GetPages();
         size_t i, page_count = pages.GetCount();
 
         for (i = 0; i < page_count; ++i)
@@ -423,14 +424,14 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     //------------------------------
     // S/N ratio Gauge (vert. bargraph)
     //------------------------------
-    m_gaugeSNR = new wxGauge(snrBox, wxID_ANY, 25, wxDefaultPosition, wxSize(135,15), wxGA_SMOOTH);
+    m_gaugeSNR = new wxGauge(snrBox, wxID_ANY, 45, wxDefaultPosition, wxSize(135,15), wxGA_SMOOTH);
     m_gaugeSNR->SetToolTip(_("Displays signal to noise ratio in dB."));
     snrSizer->Add(m_gaugeSNR, 1, wxALIGN_CENTER_HORIZONTAL|wxALL, 10);
 
     //------------------------------
     // Box for S/N ratio (Numeric)
     //------------------------------
-    m_textSNR = new wxStaticText(snrBox, wxID_ANY, wxT(" 0.0 dB"), wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
+    m_textSNR = new wxStaticText(snrBox, wxID_ANY, wxT("--"), wxDefaultPosition, wxDefaultSize, wxALIGN_CENTRE);
     m_textSNR->SetMinSize(wxSize(70,-1));
     snrSizer->Add(m_textSNR, 0, wxALIGN_CENTER_HORIZONTAL, 1);
 
@@ -568,7 +569,7 @@ TopFrame::TopFrame(wxWindow* parent, wxWindowID id, const wxString& title, const
     modeStatusSizer = new wxBoxSizer(wxVERTICAL);
     m_txtModeStatus = new wxStaticText(m_panel, wxID_ANY, wxT("unk"), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
     m_txtModeStatus->Enable(false); // enabled only if Hamlib is turned on
-    m_txtModeStatus->SetMinSize(wxSize(40,-1));
+    m_txtModeStatus->SetMinSize(wxSize(60,-1));
     modeStatusSizer->Add(m_txtModeStatus, 0, wxALL|wxEXPAND, 1);
     lowerSizer->Add(modeStatusSizer, 0, wxALIGN_CENTER_VERTICAL|wxALL, 1);
 
@@ -997,5 +998,30 @@ void TopFrame::setVoiceKeyerButtonLabel_(wxString filename)
         wxString tmpString = filename + _("...");
         m_togBtnVoiceKeyer->GetTextExtent(tmpString, &filenameWidth, &tmp);
     }
-    m_togBtnVoiceKeyer->SetLabel(vkLabel + _("\n") + filename + (isTruncated ? _("...") : _("")));
+    
+    if (filename.size() > 0)
+    {
+        m_togBtnVoiceKeyer->SetLabel(vkLabel + _("\n") + filename + (isTruncated ? _("...") : _("")));
+    }
+    else
+    {
+        m_togBtnVoiceKeyer->SetLabel(vkLabel);
+    }
+    
+    // Resize button height as needed.
+    wxSize currentSize = m_togBtnVoiceKeyer->GetSize();
+    wxSize bestSize = m_togBtnVoiceKeyer->GetBestSize();
+    currentSize.SetHeight(bestSize.GetHeight());
+    m_togBtnVoiceKeyer->SetSize(currentSize);
+    m_togBtnVoiceKeyer->Refresh();
+    
+    // XXX - wxWidgets doesn't handle button height changes properly until the user resizes 
+    // the window (even if only by a pixel or two). As a really hacky workaround, we 
+    // emulate this behavior when changing the button height.
+    wxSize winSize = GetSize();
+    SetSize(winSize.GetWidth(), winSize.GetHeight());
+    SetSize(winSize.GetWidth(), winSize.GetHeight() - 1);
+    SetSize(winSize.GetWidth(), winSize.GetHeight());
+        
+    log_info("Set voice keyer button label to %s", (const char*)m_togBtnVoiceKeyer->GetLabel().ToUTF8());
 }

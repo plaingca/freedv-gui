@@ -12,7 +12,8 @@ This document describes how to build the FreeDV GUI program for various operatin
   ```
   $ sudo apt install libspeexdsp-dev libsamplerate0-dev sox git \
   libwxgtk3.2-dev libhamlib-dev libasound2-dev libao-dev \
-  libgsm1-dev libsndfile1-dev cmake module-assistant build-essential
+  libgsm1-dev libsndfile1-dev cmake module-assistant build-essential \
+  octave octave-signal
   $ git clone https://github.com/drowe67/freedv-gui.git
   $ cd freedv-gui
 
@@ -22,7 +23,7 @@ This document describes how to build the FreeDV GUI program for various operatin
   
   (if using PortAudio)
   $ sudo apt install portaudio19-dev
-  $ ./build_linux.sh portaudio
+  $ USE_NATIVE_AUDIO=0 ./build_linux.sh 
   ```
 
   (Depending on release you may need to use `libwxgtk3.0-gtk3-dev` instead of `libwxgtk3.2-dev`.)
@@ -39,7 +40,7 @@ This document describes how to build the FreeDV GUI program for various operatin
   $ sudo dnf groupinstall "Development Tools"
   $ sudo dnf install cmake wxGTK3-devel libsamplerate-devel \
     libsndfile-devel speexdsp-devel hamlib-devel alsa-lib-devel libao-devel \
-    gsm-devel gcc-c++ sox
+    gsm-devel gcc-c++ sox octave octave-signal
   $ git clone https://github.com/drowe67/freedv-gui.git
   $ cd freedv-gui
 
@@ -49,7 +50,7 @@ This document describes how to build the FreeDV GUI program for various operatin
 
   (if using PortAudio)
   $ sudo dnf install portaudio-devel
-  $ ./build_linux.sh portaudio
+  $ USE_NATIVE_AUDIO=0 ./build_linux.sh
   ```
 
   Then run with:
@@ -102,6 +103,11 @@ Linux by following these steps:
    (rade-venv) $ PYTHONPATH="$(pwd)/rade_src:$PYTHONPATH" src/freedv
    ```
 
+Alternatively, you can use [this script](https://github.com/barjac/freedv-rade-build) developed by 
+Barry Jackson G4MKT to automate the above steps. While the FreeDV project thanks him for his contribution
+to helping Linux users more easily get on the air with FreeDV, the FreeDV development team will not provide 
+support. All support inquiries regarding this script should be directed to the linked repo.
+
 ## Building without LPCNet
 
 In preparation for possible future deprecation of FreeDV 2020 and 2020B modes, it is
@@ -118,6 +124,20 @@ from being selected.
 
 *Note: if you don't already have Codec2 installed on your machine, you will need to pass `-DBOOTSTRAP_LPCNET=1`
 to `cmake` in order for LPCNet to also be built.*
+
+## Audio driver selection
+
+By default, FreeDV uses the native audio APIs on certain platforms. These are as follows:
+
+| Platform | Audio API |
+|---|---|
+| macOS | Core Audio |
+| Linux | pipewire (via PulseAudio library) |
+| Windows | WASAPI |
+
+On platforms not listed above, PortAudio is used instead. PortAudio can also be explicitly selected by the
+user by defining the environment variable `USE_NATIVE_AUDIO=0` before running the `build_*.sh` script
+(or specifying `-DUSE_NATIVE_AUDIO=0` to `cmake`).
 
 ## Installing on Linux
 
@@ -170,13 +190,13 @@ for 2020 mode (on systems fast enough to acceptably decode it).
 Using MacPorts, most of the appropriate dependencies can be installed by:
 
 ```
-$ sudo port install automake git libtool sox +universal cmake
+$ sudo port install automake git libtool sox +universal cmake octave
 ```
 
 and on Homebrew:
 
 ```
-$ brew install automake libtool git sox cmake
+$ brew install automake libtool git sox cmake octave
 ```
 
 Once the dependencies are installed, you can then run the `build_osx.sh` script inside the source tree to build

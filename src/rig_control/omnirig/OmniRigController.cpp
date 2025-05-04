@@ -32,7 +32,7 @@ using namespace std::chrono_literals;
 
 #define OMNI_RIG_WAIT_TIME (200ms)
 
-OmniRigController::OmniRigController(int rigId, bool restoreOnDisconnect)
+OmniRigController::OmniRigController(int rigId, bool restoreOnDisconnect, bool freqOnly)
     : rigId_(rigId)
     , omniRig_(nullptr)
     , rig_(nullptr)
@@ -42,6 +42,8 @@ OmniRigController::OmniRigController(int rigId, bool restoreOnDisconnect)
     , currMode_(UNKNOWN)
     , restoreOnDisconnect_(restoreOnDisconnect)
     , writableParams_(0)
+    , freqOnly_(freqOnly)
+    , rigResponseTime_(0)
 {
     // empty
 }
@@ -100,6 +102,11 @@ void OmniRigController::requestCurrentFrequencyMode()
     enqueue_(std::bind(&OmniRigController::requestCurrentFrequencyModeImpl_, this));
 }
 
+int OmniRigController::getRigResponseTimeMicroseconds()
+{
+    return rigResponseTime_;
+}
+
 void OmniRigController::connectImpl_()
 {
     // Ensure that COM is properly initialized.
@@ -156,9 +163,13 @@ void OmniRigController::disconnectImpl_()
         if (restoreOnDisconnect_)
         {
             setFrequencyImpl_(origFreq_);
-            rig_->put_Mode(origMode_);
+            
+            if (!freqOnly_)
+            {
+                rig_->put_Mode(origMode_);
+            }
         }
-
+        
         rig_->Release();
         omniRig_->Release();
         omniRig_ = nullptr;
@@ -175,7 +186,12 @@ void OmniRigController::pttImpl_(bool state)
 {
     if (rig_ != nullptr)
     {
+        auto oldTime = std::chrono::steady_clock::now();
         rig_->put_Tx(state ? PM_TX : PM_RX);
+        auto newTime = std::chrono::steady_clock::now();
+        auto totalTimeMicroseconds = (int)std::chrono::duration_cast<std::chrono::microseconds>(newTime - oldTime).count();
+        rigResponseTime_ = std::max(rigResponseTime_, totalTimeMicroseconds);
+        
         onPttChange(this, state);
     }
 }

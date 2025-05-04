@@ -22,24 +22,32 @@
 
 #include <cstring>
 #include <cstdio>
+#include <chrono>
+#include <sched.h>
+#include <sys/resource.h>
+#include <signal.h>
 
 #include "PulseAudioDevice.h"
 
+#if defined(USE_RTKIT)
+#include "rtkit.h"
+#endif // defined(USE_RTKIT)
+
 #include "../util/logging/ulog.h"
 
-// Optimal settings based on ones used for PortAudio.
-#define PULSE_FPB 256
-#define PULSE_TARGET_LATENCY_US 20000
+using namespace std::chrono_literals;
+
+// Target latency. This controls e.g. how long it takes for
+// TX audio to reach the radio.
+#define PULSE_TARGET_LATENCY_US 10000
+
+thread_local std::chrono::high_resolution_clock::time_point PulseAudioDevice::StartTime_;
+thread_local bool PulseAudioDevice::MustStopWork_ = false;
 
 PulseAudioDevice::PulseAudioDevice(pa_threaded_mainloop *mainloop, pa_context* context, wxString devName, IAudioEngine::AudioDirection direction, int sampleRate, int numChannels)
     : context_(context)
     , mainloop_(mainloop)
     , stream_(nullptr)
-    , outputPending_(nullptr)
-    , outputPendingLength_(0)
-    , outputPendingThreadActive_(false)
-    , outputPendingThread_(nullptr)
-    , targetOutputPendingLength_(PULSE_FPB * numChannels * 2)
     , devName_(devName)
     , direction_(direction)
     , sampleRate_(sampleRate)
@@ -91,8 +99,8 @@ void PulseAudioDevice::start()
 
     // recommended settings, i.e. server uses sensible values
     pa_buffer_attr buffer_attr; 
-    buffer_attr.maxlength = (uint32_t)-1;
     buffer_attr.tlength = pa_usec_to_bytes(PULSE_TARGET_LATENCY_US, &sample_specification);
+    buffer_attr.maxlength = (uint32_t)-1;
     buffer_attr.prebuf = 0; // Ensure that we can recover during an underrun
     buffer_attr.minreq = (uint32_t) -1;
     buffer_attr.fragsize = buffer_attr.tlength;
@@ -112,6 +120,7 @@ void PulseAudioDevice::start()
         result = pa_stream_connect_playback(
             stream_, devName_.c_str(), &buffer_attr, 
             flags, NULL, NULL);
+        if (result == 0) pa_stream_trigger(stream_, nullptr, nullptr);
     }
     else
     {
@@ -131,71 +140,11 @@ void PulseAudioDevice::start()
     }
     else
     {
-        // Start data collection thread. This thread
-        // is necessary in order to ensure that we can 
-        // provide data to PulseAudio at a rate expected
-        // for the actual latency of the sound device.
-        outputPending_ = nullptr;
-        outputPendingLength_ = 0;
-        targetOutputPendingLength_ = PULSE_FPB * getNumChannels() * 2;
-        outputPendingThreadActive_ = true;
-#if 0
-        if (direction_ == IAudioEngine::AUDIO_ENGINE_OUT)
+        // Set up semaphore for signaling workers
+        if (sem_init(&sem_, 0, 0) < 0)
         {
-            outputPendingThread_ = new std::thread([&]() {
-#if defined(__linux__)
-                pthread_setname_np(pthread_self(), "FreeDV PAOut");
-#endif // defined(__linux__)
-
-                while(outputPendingThreadActive_)
-                {
-                    auto currentTime = std::chrono::steady_clock::now();
-                    int currentLength = 0;
-
-                    {
-                        std::unique_lock<std::mutex> lk(outputPendingMutex_);
-                        currentLength = outputPendingLength_;
-                    }
-
-                    if (currentLength < targetOutputPendingLength_)
-                    {                        
-                        short data[PULSE_FPB * getNumChannels()];
-                        memset(data, 0, sizeof(data));
-                        
-                        if (onAudioDataFunction)
-                        {
-                            onAudioDataFunction(*this, data, PULSE_FPB, onAudioDataState);
-                        }
-    
-                        {
-                            std::unique_lock<std::mutex> lk(outputPendingMutex_);
-                            short* temp = new short[outputPendingLength_ + PULSE_FPB * getNumChannels()];
-                            assert(temp != nullptr);
-    
-                            if (outputPendingLength_ > 0)
-                            {
-                                memcpy(temp, outputPending_, outputPendingLength_ * sizeof(short));
-    
-                                delete[] outputPending_;
-                                outputPending_ = nullptr;
-                            }
-                            memcpy(temp + outputPendingLength_, data, sizeof(data));
-    
-                            outputPending_ = temp;
-                            outputPendingLength_ += PULSE_FPB * getNumChannels();
-                        }
-                    }
-
-                    // Sleep the required amount of time to ensure we call onAudioDataFunction
-                    // every PULSE_FPB samples.
-                    int sleepTimeMilliseconds = ((double)PULSE_FPB)/((double)sampleRate_) * 1000.0;
-                    std::this_thread::sleep_until(currentTime + 
-                        std::chrono::milliseconds(sleepTimeMilliseconds));
-                }
-            });
-            assert(outputPendingThread_ != nullptr);
+            log_warn("Could not set up semaphore (errno = %d)", errno);
         }
-#endif
     }
 
     pa_threaded_mainloop_unlock(mainloop_);
@@ -216,20 +165,146 @@ void PulseAudioDevice::stop()
         pa_stream_unref(stream_);
 
         stream_ = nullptr;
+        sem_destroy(&sem_);
+    }
+}
 
-        outputPendingThreadActive_ = false;
-        if (outputPendingThread_ != nullptr)
+int PulseAudioDevice::getLatencyInMicroseconds()
+{
+    pa_threaded_mainloop_lock(mainloop_);
+    pa_usec_t latency = 0;
+    if (stream_ != nullptr)
+    {
+        int neg = 0;
+        pa_stream_get_latency(stream_, &latency, &neg); // ignore error and assume 0
+    }
+    pa_threaded_mainloop_unlock(mainloop_);
+    return (int)latency;
+}
+
+void PulseAudioDevice::setHelperRealTime()
+{
+    // XXX: We can't currently enable RT scheduling on Linux
+    // due to unreliable behavior surrounding how long it takes to
+    // go through a single RX or TX cycle. This unreliability is 
+    // likely due to the use of Python for some parts of RADE. Since
+    // timing is so unreliable and due to the fact that Linux actually
+    // kills processes that it deems as using "too much" CPU while in
+    // real-time, it's better just to use normal scheduling for now.
+#if 0
+    // Set RLIMIT_RTTIME, required for rtkit
+    struct rlimit rlim;
+    memset(&rlim, 0, sizeof(rlim));
+    rlim.rlim_cur = 10000ULL; // 10ms
+    rlim.rlim_max = 200000ULL; // 200ms
+
+    if ((setrlimit(RLIMIT_RTTIME, &rlim) < 0))
+    {
+        log_warn("Could not set RLIMIT_RTTIME (errno = %d)", errno);
+    }
+
+    // Prerequisite: SCHED_RR and SCHED_RESET_ON_FORK need to be set.
+    struct sched_param p;
+    memset(&p, 0, sizeof(p));
+
+    p.sched_priority = 3;
+    if (sched_setscheduler(0, SCHED_RR|SCHED_RESET_ON_FORK, &p) < 0 && errno == EPERM)
+    {
+#if defined(USE_RTKIT)
+        DBusError error;
+        DBusConnection* bus = nullptr;
+        int result = 0;
+
+        dbus_error_init(&error);
+        if (!(bus = dbus_bus_get(DBUS_BUS_SYSTEM, &error)))
         {
-            outputPendingThread_->join();
+            log_warn("Could not connect to system bus: %s", error.message);
+        }
+        else if ((result = rtkit_make_realtime(bus, 0, p.sched_priority)) < 0)
+        {
+            log_warn("rtkit could not make real-time: %s", strerror(-result));
+        }
 
-            delete[] outputPending_;
-            outputPending_ = nullptr;
-            outputPendingLength_ = 0;
+        if (bus != nullptr)
+        {
+            dbus_connection_unref(bus);
+        }
+#else
+        log_warn("No permission to make real-time");
+#endif // defined(USE_RTKIT)
+    }
 
-            delete outputPendingThread_;
-            outputPendingThread_ = nullptr;
+    // Set up signal handling for SIGXCPU
+    struct sigaction action;
+    action.sa_flags = SA_SIGINFO;     
+    action.sa_sigaction = HandleXCPU_;
+    sigaction(SIGXCPU, &action, NULL);
+
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGXCPU);
+    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
+#endif // 0
+}
+
+void PulseAudioDevice::startRealTimeWork()
+{
+    StartTime_ = std::chrono::high_resolution_clock::now();
+
+    sleepFallback_ = false;
+    if (clock_gettime(CLOCK_REALTIME, &ts_) == -1)
+    {
+        sleepFallback_ = true;
+    }
+}
+void PulseAudioDevice::stopRealTimeWork()
+{
+    if (sleepFallback_)
+    {
+        // Fallback to simple sleep.
+        IAudioDevice::stopRealTimeWork();
+        return;
+    }
+
+    auto latency = getLatencyInMicroseconds();
+    if (latency == 0)
+    {
+        latency = PULSE_TARGET_LATENCY_US;
+    }
+
+    ts_.tv_nsec += latency * 1000;
+    if (ts_.tv_nsec >= 1000000000)
+    {
+        ts_.tv_sec++;
+        ts_.tv_nsec -= 1000000000;
+    }
+
+    if (sem_timedwait(&sem_, &ts_) < 0 && errno != ETIMEDOUT)
+    {
+        // Fallback to simple sleep.
+        IAudioDevice::stopRealTimeWork();
+    }
+    else if (errno == ETIMEDOUT)
+    {
+        auto endTime = std::chrono::high_resolution_clock::now();
+        if ((endTime - StartTime_) >= std::chrono::microseconds(PULSE_TARGET_LATENCY_US * 10))
+        {
+            // Took a lot longer than expected. Force a sleep so we don't get killed by rtkit.
+            std::this_thread::sleep_for(std::chrono::microseconds(PULSE_TARGET_LATENCY_US));
         }
     }
+
+    MustStopWork_ = false;
+}
+
+void PulseAudioDevice::clearHelperRealTime()
+{
+    IAudioDevice::clearHelperRealTime();
+}
+
+bool PulseAudioDevice::mustStopWork()
+{
+    return MustStopWork_;
 }
 
 void PulseAudioDevice::StreamReadCallback_(pa_stream *s, size_t length, void *userdata)
@@ -242,14 +317,14 @@ void PulseAudioDevice::StreamReadCallback_(pa_stream *s, size_t length, void *us
         pa_stream_peek(s, &data, &length);
         if (!data || length == 0) 
         {
-            break;
+            return; //break;
         }
 
         if (thisObj->onAudioDataFunction)
         {
-            thisObj->onAudioDataFunction(*thisObj, (void*)data, length / thisObj->getNumChannels() / sizeof(short), thisObj->onAudioDataState);
+            thisObj->onAudioDataFunction(*thisObj, const_cast<void*>(data), length / thisObj->getNumChannels() / sizeof(short), thisObj->onAudioDataState);
         }
-
+        sem_post(&thisObj->sem_);
         pa_stream_drop(s);
     } while (pa_stream_readable_size(s) > 0);
 }
@@ -264,26 +339,6 @@ void PulseAudioDevice::StreamWriteCallback_(pa_stream *s, size_t length, void *u
         memset(data, 0, sizeof(data));
 
         PulseAudioDevice* thisObj = static_cast<PulseAudioDevice*>(userdata);
-#if 0
-        {
-            std::unique_lock<std::mutex> lk(thisObj->outputPendingMutex_);
-            if (thisObj->outputPendingLength_ >= numSamples)
-            {
-                memcpy(data, thisObj->outputPending_, sizeof(data));
-
-                short* tmp = new short[thisObj->outputPendingLength_ - numSamples];
-                assert(tmp != nullptr);
-
-                thisObj->outputPendingLength_ -= numSamples;
-                memcpy(tmp, thisObj->outputPending_ + numSamples, sizeof(short) * thisObj->outputPendingLength_);
-
-                delete[] thisObj->outputPending_;
-                thisObj->outputPending_ = tmp;
-            }
-
-            thisObj->targetOutputPendingLength_ = std::max(thisObj->targetOutputPendingLength_, 2 * numSamples);
-        }
-#endif
 
         if (thisObj->onAudioDataFunction)
         {
@@ -353,3 +408,10 @@ void PulseAudioDevice::StreamLatencyCallback_(pa_stream *p, void *userdata)
     fprintf(stderr, "Current target buffer size for %s: %d\n", (const char*)thisObj->devName_.ToUTF8(), thisObj->targetOutputPendingLength_);
 }
 #endif // 0
+
+void PulseAudioDevice::HandleXCPU_(int signum, siginfo_t *info, void *extra)
+{
+    // Notify thread that it has to stop work immediately and sleep.
+    log_warn("Taking too much CPU handling real-time tasks, pausing for a bit");
+    MustStopWork_ = true;
+}

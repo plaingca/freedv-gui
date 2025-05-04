@@ -32,6 +32,7 @@
 #include <chrono>
 #include <queue>
 #include <future>
+#include <atomic>
 
 // Codec2 required include files.
 #include "codec2.h"
@@ -50,6 +51,8 @@ extern "C"
     #include "fargan.h"
     #include "lpcnet.h"
 }
+
+#include "util/IRealtimeHelper.h"
 
 #include <samplerate.h>
 
@@ -71,7 +74,7 @@ public:
     void stop();
     void changeTxMode(int txMode);
     int getTxMode() const { return txMode_; }
-    bool isRunning() const { return dvObjects_.size() > 0; }
+    bool isRunning() const { return rade_ != nullptr || dvObjects_.size() > 0; }
     bool isModeActive(int mode) const { return std::find(enabledModes_.begin(), enabledModes_.end(), mode) != enabledModes_.end(); }
     void setRunTimeOptions(bool clip, bool bpf);
     
@@ -130,11 +133,14 @@ public:
         std::function<int()> getChannelNoiseFn,
         std::function<int()> getChannelNoiseSnrFn,
         std::function<float()> getFreqOffsetFn,
-        std::function<float*()> getSigPwrAvgFn
+        std::function<float*()> getSigPwrAvgFn,
+        std::shared_ptr<IRealtimeHelper> realtimeHelper
     );
 
     void restartTxVocoder();
  
+    float getSNREstimate();
+    
 private:
     struct ReceivePipelineState
     {
@@ -193,7 +199,7 @@ private:
     FARGANState fargan_;
     LPCNetEncState *lpcnetEncState_; 
     RADETransmitStep *radeTxStep_;
-    int sync_;
+    std::atomic<int> sync_;
     rade_text_t radeTextPtr_;
     
     int preProcessRxFn_(ParallelStep* ps);

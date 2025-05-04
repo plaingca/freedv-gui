@@ -11,7 +11,7 @@ fi
 
 createVirtualAudioCable () {
     CABLE_NAME=$1
-    pactl load-module module-null-sink sink_name=$CABLE_NAME sink_properties=device.description=$CABLE_NAME
+    pactl load-module module-null-sink sink_name=$CABLE_NAME sink_properties=device.description=$CABLE_NAME latency_msec=1
 }
 
 FREEDV_RADIO_TO_COMPUTER_DEVICE="${FREEDV_RADIO_TO_COMPUTER_DEVICE:-FreeDV_Radio_To_Computer}"
@@ -26,11 +26,16 @@ if [ "$OPERATING_SYSTEM" == "Linux" ]; then
     DRIVER_INDEX_FREEDV_COMPUTER_TO_SPEAKER=$(createVirtualAudioCable FreeDV_Computer_To_Speaker)
     DRIVER_INDEX_FREEDV_MICROPHONE_TO_COMPUTER=$(createVirtualAudioCable FreeDV_Microphone_To_Computer)
     DRIVER_INDEX_FREEDV_COMPUTER_TO_RADIO=$(createVirtualAudioCable FreeDV_Computer_To_Radio)
-    DRIVER_INDEX_LOOPBACK=`pactl load-module module-loopback source="FreeDV_Computer_To_Radio.monitor" sink="FreeDV_Radio_To_Computer"`
+    DRIVER_INDEX_LOOPBACK=`pactl load-module module-loopback source="FreeDV_Computer_To_Radio.monitor" sink="FreeDV_Radio_To_Computer" latency_msec=1`
 fi
 
 # Determine correct record device to retrieve TX data
-FREEDV_CONF_FILE=freedv-ctest-reporting.conf 
+if [ "$2" == "mpp" ]; then
+    FREEDV_CONF_FILE=freedv-ctest-reporting-mpp.conf 
+else
+    FREEDV_CONF_FILE=freedv-ctest-reporting.conf 
+fi
+
 if [ "$OPERATING_SYSTEM" == "Linux" ]; then
     REC_DEVICE="$FREEDV_COMPUTER_TO_RADIO_DEVICE.monitor"
 else
@@ -61,9 +66,13 @@ mv $(pwd)/$FREEDV_CONF_FILE.tmp $(pwd)/$FREEDV_CONF_FILE
 if [ "$OPERATING_SYSTEM" == "Linux" ]; then
     parecord --channels=1 --rate 8000 --file-format=wav --device "$REC_DEVICE" --latency 1 test.wav &
 else
-    sox -t $SOX_DRIVER "$REC_DEVICE" -c 1 -r 8000 -t wav test.wav &
+    sox -t $SOX_DRIVER "$REC_DEVICE" -c 1 -r 8000 -t wav test.wav >/dev/null 2>&1 &
 fi
 RECORD_PID=$!
+
+# Start "radio"
+python3 $SCRIPTPATH/hamlibserver.py $RECORD_PID &
+RADIO_PID=$!
 
 # Start FreeDV in test mode to record TX
 if [ "$2" == "mpp" ]; then
@@ -71,7 +80,7 @@ if [ "$2" == "mpp" ]; then
 else
     TX_ARGS="-txtime 5 "
 fi
-$FREEDV_BINARY -f $(pwd)/$FREEDV_CONF_FILE -ut tx -utmode RADE $TX_ARGS 2>&1 | tee tmp.log
+$FREEDV_BINARY -f $(pwd)/$FREEDV_CONF_FILE -ut tx -utmode RADE $TX_ARGS
 
 FDV_PID=$!
 #sleep 30 
@@ -108,3 +117,6 @@ if [ "$OPERATING_SYSTEM" == "Linux" ]; then
     pactl unload-module $DRIVER_INDEX_FREEDV_COMPUTER_TO_RADIO
     pactl unload-module $DRIVER_INDEX_FREEDV_MICROPHONE_TO_COMPUTER
 fi
+
+# End radio process as it's no longer needed
+kill $RADIO_PID

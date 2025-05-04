@@ -26,6 +26,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
+#include <chrono>
 #include <strings.h>
 
 #include "HamlibRigController.h"
@@ -33,13 +34,10 @@
 #include "util/logging/ulog.h"
 
 HamlibRigController::RigList HamlibRigController::RigList_;
+HamlibRigController::RigNameList HamlibRigController::RigNameList_;
 std::mutex HamlibRigController::RigListMutex_;
 
-#if RIGCAPS_NOT_CONST
-int HamlibRigController::BuildRigList_(struct rig_caps *rig, rig_ptr_t rigList) {
-#else
 int HamlibRigController::BuildRigList_(const struct rig_caps *rig, rig_ptr_t rigList) {    
-#endif // RIGCAPS_NOT_CONST
     ((HamlibRigController::RigList *)rigList)->push_back(rig); 
     return 1;
 }
@@ -59,7 +57,7 @@ bool HamlibRigController::RigCompare_(const struct rig_caps *rig1, const struct 
     return rig1->rig_model < rig2->rig_model;
 }
 
-HamlibRigController::HamlibRigController(std::string rigName, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect)
+HamlibRigController::HamlibRigController(std::string rigName, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect, bool freqOnly)
     : rigName_(rigName)
     , serialPort_(serialPort)
     , serialRate_(serialRate)
@@ -74,12 +72,14 @@ HamlibRigController::HamlibRigController(std::string rigName, std::string serial
     , restoreOnDisconnect_(restoreFreqModeOnDisconnect)
     , origFreq_(0)
     , origMode_(RIG_MODE_NONE)
+    , freqOnly_(freqOnly)
+    , rigResponseTime_(0)
 {
     // Perform initial load of rig list if this is our first time being created.
     InitializeHamlibLibrary();
 }
 
-HamlibRigController::HamlibRigController(int rigIndex, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect)
+HamlibRigController::HamlibRigController(int rigIndex, std::string serialPort, const int serialRate, const int civHex, const PttType pttType, std::string pttSerialPort, bool restoreFreqModeOnDisconnect, bool freqOnly)
     : rigName_(RigIndexToName(rigIndex))
     , serialPort_(serialPort)
     , serialRate_(serialRate)
@@ -94,6 +94,8 @@ HamlibRigController::HamlibRigController(int rigIndex, std::string serialPort, c
     , restoreOnDisconnect_(restoreFreqModeOnDisconnect)
     , origFreq_(0)
     , origMode_(RIG_MODE_NONE)
+    , freqOnly_(freqOnly)
+    , rigResponseTime_(0)
 {
     // Perform initial load of rig list if this is our first time being created.
     InitializeHamlibLibrary();
@@ -173,6 +175,12 @@ void HamlibRigController::InitializeHamlibLibrary()
         rig_load_all_backends();
         rig_list_foreach(&HamlibRigController::BuildRigList_, &RigList_);
         std::sort(RigList_.begin(), RigList_.end(), &HamlibRigController::RigCompare_);
+        
+        // Capture names of rigs for configuration use.
+        for (auto& rig : RigList_)
+        {
+            RigNameList_.push_back(std::string(rig->mfg_name) + std::string(" ") + std::string(rig->model_name));
+        }
 
         /* Reset debug output. */
         rig_set_debug(RIG_DEBUG_VERBOSE);
@@ -217,17 +225,19 @@ void HamlibRigController::requestCurrentFrequencyMode()
     enqueue_(std::bind(&HamlibRigController::requestCurrentFrequencyModeImpl_, this));
 }
 
+int HamlibRigController::getRigResponseTimeMicroseconds()
+{
+    return rigResponseTime_;
+}
+
 int HamlibRigController::RigNameToIndex(std::string rigName)
 {
     InitializeHamlibLibrary();
 
     int index = 0;
-    for (auto& entry : RigList_)
+    for (auto& entry : RigNameList_)
     {
-        char name[128];
-        snprintf(name, 128, "%s %s", entry->mfg_name, entry->model_name); 
-        
-        if (rigName == std::string(name))
+        if (rigName == entry)
         {
             return index;
         }
@@ -241,10 +251,7 @@ int HamlibRigController::RigNameToIndex(std::string rigName)
 std::string HamlibRigController::RigIndexToName(unsigned int rigIndex)
 {
     InitializeHamlibLibrary();
-
-    char name[128];
-    snprintf(name, 128, "%s %s", RigList_[rigIndex]->mfg_name, RigList_[rigIndex]->model_name); 
-    return name;
+    return RigNameList_[rigIndex];
 }
 
 int HamlibRigController::GetNumberSupportedRadios()
@@ -381,7 +388,10 @@ void HamlibRigController::disconnectImpl_()
         {
             vfo_t currVfo = getCurrentVfo_(); 
             setFrequencyHelper_(currVfo, origFreq_);
-            setModeHelper_(currVfo, origMode_);
+            if (!freqOnly_)
+            {
+                setModeHelper_(currVfo, origMode_);
+            }
         }
         
         origFreq_ = 0;
@@ -390,6 +400,8 @@ void HamlibRigController::disconnectImpl_()
         rig_close(rig_);
         rig_cleanup(rig_);
         rig_ = nullptr;
+        
+        onRigDisconnected(this);
     }
 }
 
@@ -404,11 +416,16 @@ void HamlibRigController::pttImpl_(bool state)
 
     ptt_t on = state ? RIG_PTT_ON : RIG_PTT_OFF;
 
+    auto oldTime = std::chrono::steady_clock::now();
     int result = RIG_OK;
     if (pttType_ != PTT_VIA_NONE)
     {
         result = rig_set_ptt(rig_, RIG_VFO_CURR, on);
     }
+    auto newTime = std::chrono::steady_clock::now();
+    auto totalTimeMicroseconds = (int)std::chrono::duration_cast<std::chrono::microseconds>(newTime - oldTime).count();
+    rigResponseTime_ = std::max(rigResponseTime_, totalTimeMicroseconds);
+    
     if (result != RIG_OK) 
     {
         log_debug("rig_set_ptt: error = %s ", rigerror(result));
